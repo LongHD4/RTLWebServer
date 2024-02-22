@@ -68,16 +68,22 @@ class RTLWebHeader {
 class RTLWebServerRequest {
     private:
         std::list<RTLWebParameter> _params;
+        String _content;
         WiFiClient *_client;
         void _addParam(RTLWebParameter p);
 
     public:
         uint8_t version;
+        bool is_post;
         RTLWebServerRequest(WiFiClient *client);
         void stop();
 
+        void setContent(const String& content);
+        String content();
         void send(int code, const String& contentType=String(), const String& content=String());
         void addGetParams(const String& params);
+        bool hasParam(const String& name, bool post = false);
+        const char *getParam(const String& name, bool post = false);
 };
 
 /******************************************************************************/
@@ -99,6 +105,7 @@ class RTLCallbackWebHandler {
         void onRequest(RTLRequestHandlerFunction fn){ _onRequest = fn; }
 
         RTLWebMethod method() { return _method; }
+        String url() { return _uri; }
 
         void handleRequest(RTLWebServerRequest *request) {
             if (_onRequest) {

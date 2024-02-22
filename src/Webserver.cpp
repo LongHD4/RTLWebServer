@@ -82,6 +82,7 @@ static const char* responseCodeToString(int code) {
 
 RTLWebServerRequest::RTLWebServerRequest(WiFiClient *client) {
     _client = client;
+    _content = String();
     _params.clear();
 }
 
@@ -89,11 +90,28 @@ void RTLWebServerRequest::stop() {
     _params.clear();
 }
 
+void RTLWebServerRequest::setContent(const String& content) {
+    _content = content;
+}
+
+String RTLWebServerRequest::content() {
+    return _content;
+}
+
 void RTLWebServerRequest::send(int code, const String& contentType, const String& content) {
+    int max_len = 300;
     char buf[300];
-    snprintf(buf, sizeof(buf), "HTTP/1.%d %d %s\r\n", version, code, responseCodeToString(code));
-    Serial.println(buf);
+
+    int index = snprintf(buf, max_len, "HTTP/1.%d %d %s\r\n", version, code, responseCodeToString(code));
+    if(contentType.length()) {
+        max_len -= index;
+        index += snprintf(&buf[index], max_len, "Content-Type: %s\r\n", contentType.c_str());
+    }
     _client->println(buf);
+
+    if (content.length()) {
+        _client->println(content);
+    }
 }
 
 void RTLWebServerRequest::_addParam(RTLWebParameter p) {
@@ -114,6 +132,41 @@ void RTLWebServerRequest::addGetParams(const String& params) {
         _addParam(param);
         start = end + 1;
     }
+}
+
+bool RTLWebServerRequest::hasParam(const String& name, bool post) {
+    std::list<RTLWebParameter>::iterator next = _params.begin();
+
+    if (post != is_post) {
+        return false;
+    }
+
+    while (next != _params.end()) {
+        String param = String(next->name);
+        if (param == name) {
+            return true;
+        }
+        next++;
+    }
+    return false;
+}
+
+const char *RTLWebServerRequest::getParam(const String& name, bool post) {
+    std::list<RTLWebParameter>::iterator next = _params.begin();
+
+    if (post != is_post) {
+        return nullptr;
+    }
+
+    while (next != _params.end()) {
+        String param = String(next->name);
+        if (param == name) {
+            return next->value.c_str();
+        }
+        next++;
+    }
+
+    return nullptr;
 }
 
 /******************************************************************************/
@@ -164,16 +217,15 @@ bool RTLWebServer::_parseReqHead() {
     String u = _temp.substring(m.length() + 1, index);
     _temp = _temp.substring(index + 1);
 
+    _request->is_post = false;
     if (m == "GET") {
         _method = HTTP_GET;
-        Serial.println("Received GET method");
     }
     else if (m == "POST") {
         _method = HTTP_POST;
-        Serial.println("Received POST method");
+        _request->is_post = true;
     }
     else {
-        Serial.println("Not supported method");
         return false;    /* We only support GET/POST method now */
     }
 
@@ -192,7 +244,6 @@ bool RTLWebServer::_parseReqHead() {
     }
 
     _url = urlDecode(u);
-    Serial.print("URL "); Serial.println(_url);
     _request->addGetParams(g);
 
     _temp = String();
@@ -229,31 +280,54 @@ void RTLWebServer::end() {
 }
 
 void RTLWebServer::loop() {
+    bool handled = false;
+
     /* Check if a client has connected */
     WiFiClient client = _server.available();
-
-    /* Read the request */
+    if (!client.available()) {
+        return;
+    }
+    _request = new RTLWebServerRequest(&client);
+    
+    /* Read the request header */
     _temp = client.readStringUntil('\r');
-    client.flush();
 
-    if (_temp.length()) {
-        _request = new RTLWebServerRequest(&client);
-        if (_parseReqHead()) {
-            /* Find handler in list if matched with url and method */
-            std::list<RTLCallbackWebHandler>::iterator next = _handlers.begin();
-            while (next != _handlers.end()) {
-                Serial.print("Method "); Serial.println(next->method());
-                if (next->method() == _method) {
-                    Serial.print("Handle method "); Serial.println(next->method());
-                    next->handleRequest(_request);
+    if (_parseReqHead()) {
+        if (_method == HTTP_POST) {
+            /* Discard the headers */
+            while (client.available()) {
+                _temp = client.readStringUntil('\r');
+                if (_temp == "\n") {
                     break;
                 }
-                next++;
             }
+
+            /* Read the POST data */
+            _temp = client.readStringUntil('\r');
+            _request->setContent(_temp);
         }
-        _request->stop();
+        
+        /* Find handler in list if matched with url and method */
+        std::list<RTLCallbackWebHandler>::iterator next = _handlers.begin();
+        while (next != _handlers.end()) {
+            if ((next->method() == _method) && (_url == next->url())) {
+                next->handleRequest(_request);
+                handled = true;
+                break;
+            }
+            next++;
+        }
+    }
+    else {
+        _request->send(404);    /* Not Found */
     }
 
+    if (!handled) {
+        _request->send(405);    /* Method Not Allowed */
+    }
+    _request->stop();
+
     /* Close connection */
+    client.flush();
     client.stop();
 }
